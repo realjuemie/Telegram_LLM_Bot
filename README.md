@@ -1,4 +1,3 @@
-```markdown
 # Telegram Local LLM Bot (LM Studio 版)
 
 这是一个功能强大的 Telegram 机器人，专为接入本地大语言模型（通过 LM Studio）而设计。它不仅实现了基础的对话功能，还具备**上下文记忆**、**自定义唤醒词**、**智能引用分析**以及完善的**权限管理系统**。
