@@ -9,7 +9,7 @@ services:
       # 替换成你的 Token
       - TG_BOT_TOKEN=你的_TELEGRAM_BOT_TOKEN
       # 指向宿主机的 LM Studio 端口
-      - LM_STUDIO_URL=http://192.168.1.1:1234/v1
+      - LM_STUDIO_URL=http://127.0.0.1:1234/v1
     volumes:
       # 挂载数据目录，保证重启后权限不丢失
       - ./data:/app/data
