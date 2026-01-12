@@ -2,6 +2,8 @@ import logging
 import json
 import os
 import asyncio
+import base64
+import io
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
@@ -116,24 +118,40 @@ class PermissionManager:
 
 pm = PermissionManager(PERMISSIONS_FILE)
 
-# --- LLM 调用 ---
-async def chat_with_lm_studio(chat_id, user_prompt):
+# --- LLM 调用 (支持视觉) ---
+async def chat_with_lm_studio(chat_id, user_prompt, image_base64=None):
     current_system_prompt = load_system_prompt()
     history = chat_histories.get(chat_id, [])
     
     messages_payload = [{"role": "system", "content": current_system_prompt}]
     messages_payload.extend(history)
-    messages_payload.append({"role": "user", "content": user_prompt})
+
+    # 构造用户消息
+    if image_base64:
+        user_content = [
+            {"type": "text", "text": user_prompt},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
+        ]
+    else:
+        user_content = user_prompt
+
+    messages_payload.append({"role": "user", "content": user_content})
 
     try:
         response = await aclient.chat.completions.create(
             model="local-model",
             messages=messages_payload,
             temperature=0.7,
+            max_tokens=-1
         )
         ai_reply = response.choices[0].message.content
         
-        history.append({"role": "user", "content": user_prompt})
+        # 历史记录处理 (只存占位符，不存 Base64)
+        history_content = user_prompt
+        if image_base64:
+            history_content = f"[用户发送或引用了一张图片] {user_prompt}"
+
+        history.append({"role": "user", "content": history_content})
         history.append({"role": "assistant", "content": ai_reply})
         
         if len(history) > HISTORY_LIMIT:
@@ -142,8 +160,12 @@ async def chat_with_lm_studio(chat_id, user_prompt):
             chat_histories[chat_id] = history
             
         return ai_reply
+
     except Exception as e:
         logger.error(f"LM Studio API Error: {e}")
+        # 如果有图片但报错，通常是模型不支持
+        if image_base64:
+            return "当前模型不支持视觉输入，请联系管理员切换模型。"
         return f"⚠️ 模型调用出错: {e}"
 
 # --- 指令处理器 ---
@@ -216,7 +238,7 @@ async def set_trigger_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("⚠️ 请输入唤醒词。")
         return
     save_file_content(TRIGGER_WORD_FILE, trigger)
-    await update.message.reply_text(f"✅ 唤醒词已设置: 「{trigger}」 (支持句中触发)")
+    await update.message.reply_text(f"✅ 唤醒词已设置: 「{trigger}」")
 
 async def get_trigger_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not pm.is_admin(update.effective_user.id): return
@@ -230,24 +252,46 @@ async def reset_trigger_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
 # --- 消息处理核心 ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text: return
+    if not update.message: return
+
+    # 1. 提取基础信息
+    current_text = update.message.text or update.message.caption or ""
+    
+    # 2. [核心升级] 智能图片检测
+    target_photo_file = None
+    
+    # 情况A: 当前消息直接带图 (优先级最高)
+    if update.message.photo:
+        target_photo_file = update.message.photo[-1]
+    
+    # 情况B: 当前没图，但是引用了别人的图
+    elif update.message.reply_to_message and update.message.reply_to_message.photo:
+        target_photo_file = update.message.reply_to_message.photo[-1]
+
+    # 如果既没有文字，也没有任何图片(无论当前还是引用)，则忽略
+    if not current_text and not target_photo_file:
+        return
 
     chat_type = update.effective_chat.type
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    user_input = update.message.text.strip()
+    user_input = current_text.strip()
     bot_username = context.bot.username
 
+    # 处理引用文本 (Author Name & Text)
     quoted_content = ""
     reply_obj = update.message.reply_to_message
     if reply_obj:
-        quoted_content = reply_obj.text or reply_obj.caption or "[非文本消息]"
+        # 获取引用对象的文本 (可能是 Caption 也可能是 Text)
+        q_text = reply_obj.text or reply_obj.caption or "[无文本内容]"
         quoted_user = reply_obj.from_user.full_name
+        quoted_content = f"引用内容 (来自 {quoted_user}): {q_text}"
     
     trigger_word = load_trigger_word()
     clean_prompt = user_input
     should_reply = False
 
+    # --- 权限与触发判定 ---
     # 1. 私聊
     if chat_type == 'private':
         if pm.is_user_allowed(user_id):
@@ -260,11 +304,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_mentioned = f"@{bot_username}" in user_input
         is_reply_to_bot = (reply_obj and reply_obj.from_user.id == context.bot.id)
         
-        # [核心修改]：只要包含唤醒词即可触发，不要求必须在开头
         is_triggered_by_word = False
         if trigger_word and trigger_word in user_input:
             is_triggered_by_word = True
-            # [核心修改]：替换掉唤醒词，无论它在哪里
             clean_prompt = user_input.replace(trigger_word, "").strip()
 
         if is_mentioned or is_reply_to_bot or is_triggered_by_word:
@@ -276,28 +318,58 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if is_mentioned or is_reply_to_bot:
                     await update.message.reply_text(f"🚫 群组未授权 (ID: {chat_id})。")
 
-    if should_reply and not clean_prompt and not quoted_content:
+    if not should_reply:
         return
 
+    # [逻辑优化] 如果有图片，但没有文字指令，赋予默认指令
+    if target_photo_file and not clean_prompt:
+        clean_prompt = "请详细描述这张图片。"
+    elif not clean_prompt and not target_photo_file:
+        # 既无图也无字，不回
+        return
+
+    # --- 图片下载处理 ---
+    image_base64 = None
+    if target_photo_file:
+        try:
+            file_obj = await context.bot.get_file(target_photo_file.file_id)
+            byte_stream = io.BytesIO()
+            await file_obj.download_to_memory(byte_stream)
+            image_base64 = base64.b64encode(byte_stream.getvalue()).decode('utf-8')
+            # 提示: 正在分析图片
+            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
+        except Exception as e:
+            logger.error(f"图片下载失败: {e}")
+            await update.message.reply_text("❌ 图片读取失败。")
+            return
+
+    # --- 最终 Prompt 构造 ---
     final_prompt = clean_prompt
     if quoted_content:
+        # 告诉模型这是基于引用的回复
         final_prompt = (
-            f"请根据以下【引用内容】回答我的问题或执行指令。\n\n"
-            f"【引用内容】(来自用户 {quoted_user}):\n"
-            f"{quoted_content}\n\n"
-            f"【我的指令】:\n"
-            f"{clean_prompt}"
+            f"请根据以下【上下文】回答指令。\n"
+            f"【{quoted_content}】\n"
+            f"--------------------\n"
+            f"【我的指令】: {clean_prompt}"
         )
 
-    if should_reply:
+    # 如果只有文字，显示 typing
+    if not image_base64:
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-        reply = await chat_with_lm_studio(chat_id, final_prompt)
+    
+    # 调用 LLM
+    reply = await chat_with_lm_studio(chat_id, final_prompt, image_base64)
+    
+    # --- [关键] 回复目标判定 ---
+    # 默认回复给触发指令的人 (当前消息)
+    target_msg_id = update.message.message_id
+    
+    # 如果存在引用消息，且该消息不是机器人自己发的 -> 回复给原引用消息 (即图片所有者)
+    if reply_obj and reply_obj.from_user.id != context.bot.id:
+        target_msg_id = reply_obj.message_id
         
-        target_msg_id = update.message.message_id
-        if reply_obj and reply_obj.from_user.id != context.bot.id:
-            target_msg_id = reply_obj.message_id
-            
-        await update.message.reply_text(reply, reply_to_message_id=target_msg_id)
+    await update.message.reply_text(reply, reply_to_message_id=target_msg_id)
 
 if __name__ == '__main__':
     application = ApplicationBuilder().token(TOKEN).build()
@@ -316,7 +388,8 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler("get_trigger", get_trigger_handler))
     application.add_handler(CommandHandler("reset_trigger", reset_trigger_handler))
     
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    # 过滤器: 文本 | 图片 | 附言(图片下的字)
+    application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO | filters.CAPTION) & (~filters.COMMAND), handle_message))
 
-    print("Bot is running...")
+    print("Bot is running with ENHANCED VISION (Quote Support)...")
     application.run_polling()
