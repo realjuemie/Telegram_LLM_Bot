@@ -3,6 +3,7 @@ import json
 import os
 import asyncio
 from telegram import Update
+from telegram.constants import ChatAction
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 from openai import AsyncOpenAI
 
@@ -15,11 +16,19 @@ DATA_DIR = "/app/data"
 PERMISSIONS_FILE = os.path.join(DATA_DIR, "permissions.json")
 SYSTEM_PROMPT_FILE = os.path.join(DATA_DIR, "system_prompt.txt")
 
+# [新配置] 记忆设置
+MAX_HISTORY_LENGTH = 10  # 记住最近 10 轮对话 (User + AI = 1轮)
+HISTORY_LIMIT = MAX_HISTORY_LENGTH * 2 
+
 # 默认系统提示词
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant. If the user provides context, analyze it based on their instructions."
 
 # 初始化 OpenAI 客户端
 aclient = AsyncOpenAI(base_url=LM_STUDIO_URL, api_key="lm-studio")
+
+# [新增] 内存中的对话历史存储
+# 格式: { chat_id: [ {"role": "user", "content": "..."}, {"role": "assistant", "content": "..."} ] }
+chat_histories = {}
 
 # 日志设置
 logging.basicConfig(
@@ -28,7 +37,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- 提示词管理函数 ---
+# --- 辅助函数 ---
 def load_system_prompt():
     if not os.path.exists(SYSTEM_PROMPT_FILE):
         return DEFAULT_SYSTEM_PROMPT
@@ -49,7 +58,7 @@ def save_system_prompt(content):
         logger.error(f"保存提示词失败: {e}")
         return False
 
-# --- 权限管理类 ---
+# --- 权限管理类 (保持不变) ---
 class PermissionManager:
     def __init__(self, filepath):
         self.filepath = filepath
@@ -100,19 +109,39 @@ class PermissionManager:
 
 pm = PermissionManager(PERMISSIONS_FILE)
 
-# --- LLM 调用 ---
-async def chat_with_lm_studio(user_prompt):
+# --- [核心修改] LLM 调用逻辑 (支持记忆) ---
+async def chat_with_lm_studio(chat_id, user_prompt):
     current_system_prompt = load_system_prompt()
+    
+    # 1. 获取该聊天的历史记录，如果没有则初始化为空列表
+    history = chat_histories.get(chat_id, [])
+    
+    # 2. 构建完整的消息链：System + History + Current User Input
+    messages_payload = [{"role": "system", "content": current_system_prompt}]
+    messages_payload.extend(history)
+    messages_payload.append({"role": "user", "content": user_prompt})
+
     try:
         response = await aclient.chat.completions.create(
             model="local-model",
-            messages=[
-                {"role": "system", "content": current_system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
+            messages=messages_payload,
             temperature=0.7,
         )
-        return response.choices[0].message.content
+        ai_reply = response.choices[0].message.content
+        
+        # 3. [新增] 更新历史记录
+        # 将本次问答加入历史
+        history.append({"role": "user", "content": user_prompt})
+        history.append({"role": "assistant", "content": ai_reply})
+        
+        # 4. 裁剪历史 (防止超出 Token 限制)
+        # 如果超过限制，去掉最前面的几条 (保留最近的)
+        if len(history) > HISTORY_LIMIT:
+            chat_histories[chat_id] = history[-HISTORY_LIMIT:]
+        else:
+            chat_histories[chat_id] = history
+            
+        return ai_reply
     except Exception as e:
         logger.error(f"LM Studio API Error: {e}")
         return f"⚠️ 模型调用出错: {e}"
@@ -120,17 +149,24 @@ async def chat_with_lm_studio(user_prompt):
 # --- 指令处理器 ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("机器人已启动。")
+    await update.message.reply_text("机器人已启动。\n使用 /reset 可以清除对话记忆。")
+
+# [新增] 清除记忆指令
+async def reset_history_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if chat_id in chat_histories:
+        del chat_histories[chat_id]
+        await update.message.reply_text("🧹 记忆已清除，我们重新开始吧！")
+    else:
+        await update.message.reply_text("✨ 当前没有记忆需要清除。")
 
 async def add_admin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender_id = update.effective_user.id
     if not pm.is_admin(sender_id):
         await update.message.reply_text("🚫 只有管理员可以使用此命令。")
         return
-
     target_id = None
     target_name = "指定用户"
-
     if update.message.reply_to_message:
         target_user = update.message.reply_to_message.from_user
         target_id = target_user.id
@@ -142,7 +178,6 @@ async def add_admin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("⚠️ ID 格式错误。")
             return
-    
     if target_id:
         if pm.add_admin(target_id):
             await update.message.reply_text(f"✅ 已将 {target_name} 设为管理员！")
@@ -187,7 +222,8 @@ async def set_system_prompt_handler(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text("⚠️ 请输入提示词内容。")
         return
     if save_system_prompt(new_prompt):
-        await update.message.reply_text(f"✅ 系统提示词已更新！\n\n{new_prompt}")
+        # 修改提示词后，建议清除所有群的记忆，防止逻辑冲突，这里为了简单只提示
+        await update.message.reply_text(f"✅ 系统提示词已更新！\n建议运行 /reset 清除旧记忆。\n\n{new_prompt}")
     else:
         await update.message.reply_text("❌ 保存失败。")
 
@@ -219,12 +255,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     quoted_content = ""
     reply_obj = update.message.reply_to_message
     
-    # 获取引用内容
     if reply_obj:
         quoted_content = reply_obj.text or reply_obj.caption or "[非文本消息]"
         quoted_user = reply_obj.from_user.full_name
     
-    # 构造 Prompt
     final_prompt = user_input
     if quoted_content:
         clean_instruction = user_input.replace(f"@{bot_username}", "").strip()
@@ -236,7 +270,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{clean_instruction}"
         )
 
-    # 权限检查
     should_reply = False
     if chat_type == 'private':
         if pm.is_user_allowed(user_id):
@@ -254,22 +287,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"🚫 群组未授权 (ID: {chat_id})。")
 
     if should_reply and final_prompt:
-        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
-        reply = await chat_with_lm_studio(final_prompt)
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         
-        # --- 核心修改：智能判断回复目标 ---
+        # 调用带记忆的聊天函数，传入 chat_id
+        reply = await chat_with_lm_studio(chat_id, final_prompt)
         
-        # 默认：回复当前发指令的用户
         target_msg_id = update.message.message_id
-        
-        if reply_obj:
-            # 只有当引用的消息【不是】机器人自己发的时，才去回复那条引用消息
-            if reply_obj.from_user.id != context.bot.id:
-                target_msg_id = reply_obj.message_id
-            
-            # 如果 reply_obj.from_user.id == context.bot.id
-            # 代码会跳过上面的 if，保持 target_msg_id 为当前用户的消息 ID
-            # 从而实现“引用机器人时，回复我”的效果
+        if reply_obj and reply_obj.from_user.id != context.bot.id:
+            target_msg_id = reply_obj.message_id
             
         await update.message.reply_text(reply, reply_to_message_id=target_msg_id)
 
@@ -281,11 +306,14 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler("auth_user", auth_user))
     application.add_handler(CommandHandler("add_admin", add_admin_handler))
     
+    # 新增清除记忆指令
+    application.add_handler(CommandHandler("reset", reset_history_handler))
+    
     application.add_handler(CommandHandler("set_system", set_system_prompt_handler))
     application.add_handler(CommandHandler("get_system", get_system_prompt_handler))
     application.add_handler(CommandHandler("reset_system", reset_system_prompt_handler))
     
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
-    print("Bot is running...")
+    print("Bot is running with MEMORY...")
     application.run_polling()
