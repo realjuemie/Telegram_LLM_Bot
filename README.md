@@ -1,50 +1,71 @@
-# Telegram Local LLM Bot (LM Studio 版)
+# Telegram Local LLM Bot (Vision Edition)
 
-这是一个功能强大的 Telegram 机器人，专为接入本地大语言模型（通过 LM Studio）而设计。它不仅实现了基础的对话功能，还具备**上下文记忆**、**自定义唤醒词**、**智能引用分析**以及完善的**权限管理系统**。
+🚀 **你的本地大模型智能助手**
 
-## ✨ 核心功能
+这是一个功能强大的 Telegram 机器人，专为接入本地运行的大语言模型（通过 **LM Studio**）而设计。
+它不仅支持流畅的文本对话，更具备**视觉识别能力**，可以“看懂”你发送或引用的图片，并支持完善的权限管理和动态人设配置。
 
-* **🧠 短期记忆 (Context Awareness)**：支持多轮对话，机器人能记住最近 10 轮的聊天内容，让对话更流畅自然。
-* **🗣️ 自定义唤醒词 (Trigger Word)**：除了 `@机器人`，支持设置如“Siri”、“贾维斯”等自定义唤醒词触发回复。
-* **💬 智能引用回复**：在群里回复某人的消息并 @机器人，模型会读取原消息作为背景信息，并直接回复给原消息的发送者。
-* **🔌 本地模型对接**：通过 OpenAI 兼容接口连接 LM Studio，数据完全掌控在本地。
-* **🛡️ 权限管理系统**：
-    * **白名单机制**：严格控制私聊用户和群组的访问权限。
-    * **动态管理员**：通过指令直接任命新管理员。
-* **🎭 动态人设**：管理员可随时修改系统提示词 (System Prompt)，让机器人扮演不同角色。
-* **🐳 Docker 部署**：一键部署，数据持久化存储。
+## ✨ 核心亮点
+
+### 👁️ 多模态视觉支持 (Vision)
+* **直接识图**：发送一张图片并附上文字（如“这张图里有什么？”），机器人即刻分析。
+* **引用识图**：**这是杀手级功能！** 在群里看到别人发的图，直接**回复**那张图并 @机器人（或说唤醒词），机器人会自动抓取原图进行回答，且**智能回复给原图发送者**。
+
+### 🧠 智能对话系统
+* **上下文记忆**：支持多轮对话（记忆最近 10 轮），聊天不费劲。
+* **灵活唤醒**：
+    * **@提及**：`@BotName 帮我写个代码`
+    * **引用回复**：回复机器人的消息继续追问。
+    * **自定义唤醒词**：设置“小助手”为唤醒词，句子**任意位置**包含该词即可触发（例如：“小助手帮我看下这个”、“天气怎么样啊小助手”）。
+
+### 🛡️ 企业级权限管理
+* **白名单机制**：只有授权的用户和群组才能使用，防止资源被滥用。
+* **动态管理**：无需重启，通过指令即可添加管理员、授权群组。
+
+### ⚙️ 易用性设计
+* **纯文本输出**：避免 Markdown 解析错误导致的“消息发送失败”，稳定第一。
+* **Docker 部署**：一键启动，数据持久化，环境隔离。
+
+---
 
 ## 🛠️ 前期准备
 
-1.  **Telegram Bot Token**：
+1.  **Telegram Bot**：
     * 找 `@BotFather` 创建机器人。
-    * **关键设置**：发送 `/setprivacy` -> 选择你的机器人 -> **Disable**。
-    * *注意：必须关闭隐私模式，否则“唤醒词”和“引用检测”功能在群组中无法正常工作。*
+    * **关键设置**：发送 `/setprivacy` ➜ 选择你的机器人 ➜ **Disable** (关闭隐私模式)。
+    * *注意：必须关闭隐私模式，否则“唤醒词”和“引用检测”在群组无法生效。*
 2.  **LM Studio**：
-    * 启动 Local Server，端口默认为 `1234`。
-    * 确保开启 **CORS** (Cross-Origin Resource Sharing)。
-3.  **Docker**：本机安装 Docker 和 Docker Compose。
+    * 下载并安装 [LM Studio](https://lmstudio.ai/)。
+    * **模型选择**：
+        * **聊天**：推荐 Llama 3, Mistral 等。
+        * **识图**：必须加载支持 Vision 的模型（如 `Llava`, `Qwen-VL`, `BakLLaVA`）。
+    * **启动服务**：Start Local Server，端口默认为 `1234`。
+3.  **环境**：安装 Docker 和 Docker Compose。
+
+---
 
 ## 📂 目录结构
 
 ```text
 tg_llm_bot/
-├── data/                  # 数据持久化目录 (自动生成/更新)
+├── data/                  # 数据目录 (自动生成/持久化)
 │   ├── permissions.json   # 权限名单
-│   ├── system_prompt.txt  # 系统提示词
+│   ├── system_prompt.txt  # 系统提示词 (人设)
 │   └── trigger_word.txt   # 自定义唤醒词
-├── bot.py                 # 核心代码
-├── Dockerfile             # 镜像构建文件
-├── docker-compose.yml     # 容器编排配置
+├── bot.py                 # 核心源码
+├── Dockerfile             # 构建文件
+├── docker-compose.yml     # 编排文件
 └── requirements.txt       # 依赖库
 
 ```
 
-## 🚀 部署流程
+---
 
-### 1. 初始化配置
+## 🚀 部署指南
 
-在 `data/permissions.json` 中填入你的 Telegram ID 作为初始管理员：
+### 1. 配置管理员
+
+在 `data/permissions.json` 中填入你的 Telegram ID（可通过 `@userinfobot` 获取）：
 
 ```json
 {
@@ -55,83 +76,81 @@ tg_llm_bot/
 
 ```
 
-### 2. 修改环境变量
+### 2. 配置 Token
 
-编辑 `docker-compose.yml`，填入你的 Token：
+编辑 `docker-compose.yml`：
 
 ```yaml
     environment:
-      - TG_BOT_TOKEN=你的_BOT_TOKEN
+      - TG_BOT_TOKEN=你的_TELEGRAM_BOT_TOKEN
       - LM_STUDIO_URL=[http://host.docker.internal:1234/v1](http://host.docker.internal:1234/v1)
 
 ```
 
-### 3. 启动服务
+### 3. 一键启动
 
 ```bash
 docker-compose up -d --build
 
 ```
 
+*更新代码后，也请运行此命令重构镜像。*
+
 ---
 
-## 📖 使用指南
+## 📖 使用手册
 
-### 🕹️ 交互方式
+### 📸 视觉功能怎么用？
 
-该机器人支持三种交互模式：
+| 场景 | 操作方法 |
+| --- | --- |
+| **私聊发图** | 直接发送图片，在“添加说明”中输入问题。 |
+| **群聊发图** | 发送图片，并在说明中带上唤醒词或 @机器人。 |
+| **引用问图** | **(推荐)** 长按别人的图片 -> 点击回复 -> 输入“@Bot 这图里有几个人？” -> 机器人会自动下载原图分析。 |
 
-1. **私聊模式**：直接发送消息（需在白名单内）。
-2. **群组 @ 模式**：在群里发送 `@BotName 你好`。
-3. **群组唤醒词模式**：
-* 管理员设置唤醒词：`/set_trigger 贾维斯`
-* 用户直接发送：`贾维斯 帮我写个代码`（无需 @，无需空格，自动识别）。
+### 🗣️ 自定义唤醒词
 
+管理员发送 `/set_trigger 贾维斯`。
+设置后：
 
+* “**贾维斯** 给我讲个笑话” -> ✅ 触发
+* “这道题怎么做 **贾维斯**” -> ✅ 触发
+* 无需空格，无需 @，机器人会自动提取指令。
 
-### 🧠 关于“记忆”与“重置”
+### 🎮 指令列表 (BotFather)
 
-* **记忆机制**：机器人会记住每个群组（或私聊）最近的 **10 轮对话**。
-* **共享记忆**：在同一个群组内，所有成员共享一份记忆（机器人知道 A 刚才说了什么，B 接着问是能接上的）。
-* **清除记忆**：如果话题聊偏了，或者机器人逻辑混乱，发送 `/reset` 即可清空当前会话的记忆，重新开始。
+建议发送给 `@BotFather` 进行菜单配置：
 
-### 📋 指令列表 (BotFather)
+```text
+start - 检查状态
+reset - 清除记忆 (重开)
+auth_group - 👑 授权当前群组
+auth_user - 👑 授权私聊用户(需回复)
+add_admin - 👑 添加管理员
+set_system - 👑 设置人设 (例: /set_system 你是猫娘)
+get_system - 👑 查看人设
+reset_system - 👑 重置人设
+set_trigger - 👑 设置唤醒词 (例: /set_trigger 小助手)
+get_trigger - 👑 查看唤醒词
+reset_trigger - 👑 清除唤醒词
 
-建议在 `@BotFather` 中注册以下指令：
-
-| 指令 | 权限 | 作用 |
-| --- | --- | --- |
-| `/start` | 所有人 | 检查机器人状态 |
-| `/reset` | 所有人 | **清除对话记忆 (重开)** |
-| `/auth_group` | 👑 管理员 | 授权当前群组 |
-| `/auth_user` | 👑 管理员 | 授权私聊用户 (需回复对方消息) |
-| `/add_admin` | 👑 管理员 | 添加管理员 (需回复，或后接ID) |
-| `/set_system` | 👑 管理员 | 设置系统人设 (例: `/set_system 你是猫娘`) |
-| `/get_system` | 👑 管理员 | 查看当前人设 |
-| `/reset_system` | 👑 管理员 | 重置人设为默认 |
-| `/set_trigger` | 👑 管理员 | 设置唤醒词 (例: `/set_trigger 小助手`) |
-| `/get_trigger` | 👑 管理员 | 查看当前唤醒词 |
-| `/reset_trigger` | 👑 管理员 | 关闭唤醒词功能 |
+```
 
 ---
 
 ## ❓ 常见问题 (FAQ)
 
-**Q1: 设置了唤醒词，但在群里叫它没反应？**
-A: 请务必检查 **BotFather** 的设置。
+**Q: 发送图片后机器人提示“当前模型不支持视觉输入”？**
+A: 这是因为 LM Studio 当前加载的是纯文本模型（如 Llama 3）。请去 LM Studio 搜索并加载 `Llava` 或 `Qwen-VL` 等带有 "Vision" 标签的模型。
 
-* 进入 `@BotFather` -> `/mybots` -> Bot Settings -> **Group Privacy**。
-* 确保状态是 **Turned off** (Disabled)。
-* 如果设置后无效，尝试把机器人踢出群组重新拉入。
+**Q: 群里叫它不理我？**
+A: 1. 检查群组是否已授权 (`/auth_group`)。 2. 检查 BotFather 的 Privacy Mode 是否已关闭 (`Disable`)。
 
-**Q2: 机器人回复别人时，为什么引用的是我的消息？**
-A: 正常逻辑是：你回复 A 的消息并 @机器人，机器人会通过分析 A 的话，生成回复，并**直接 Reply 给 A**（为了保持对话连贯性）。如果是你自己直接问机器人，它会回复你。
+**Q: 为什么它回复了图片发送者，而不是回复我？**
+A: 这是特意设计的。当你引用别人的消息提问时，机器人认为你在针对那条消息进行讨论，为了保持上下文连贯，它会“指哪打哪”，直接回复给被引用的原消息。
 
-**Q3: 重启 Docker 后记忆还在吗？**
-A: 不在。为了节省资源和保持逻辑清晰，对话记忆（Context）存储在内存中，重启后会丢失。但**权限、人设、唤醒词**等配置保存在 `data/` 目录中，重启**不会丢失**。
-
-**Q4: 我引用了机器人的话，它为什么回复我而不是回复它自己？**
-A: 这是一个防嵌套优化。如果回复目标是机器人自己，它会自动改为回复“当前发送指令的用户”，避免聊天界面出现无限层级的引用楼梯。
+**Q: 重启 Docker 会丢失数据吗？**
+A: **权限、人设、唤醒词**不会丢失（保存在 `data/`）。**对话记忆**会重置（保存在内存中），这有助于清理长时间运行积累的上下文垃圾。
 
 ---
 
@@ -140,10 +159,5 @@ A: 这是一个防嵌套优化。如果回复目标是机器人自己，它会�
 MIT License
 
 ```
-MIT License
-Copyright (c) 2026 [realjuemie]
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ```
